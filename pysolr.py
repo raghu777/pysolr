@@ -278,13 +278,15 @@ class Results(object):
     use with features which change the response format.
     """
 
-    def __init__(self, decoded, next_page_query=None):
+    def __init__(self, decoded, next_page_query=None, url = None):
         self.raw_response = decoded
 
         # main response part of decoded Solr response
         response_part = decoded.get("response") or {}
         self.docs = response_part.get("docs", ())
         self.hits = response_part.get("numFound", 0)
+        self.maxScore = response_part.get("maxScore", 0)
+        self.url = url
 
         # other response metadata
         self.debug = decoded.get("debug", {})
@@ -470,7 +472,7 @@ class Solr(object):
 
         return force_unicode(resp.content)
 
-    def _select(self, params, handler=None):
+    def _select(self, params, handler=None, http_method = None):
         """
         :param params:
         :param handler: defaults to self.search_handler (fallback to 'select')
@@ -487,11 +489,10 @@ class Solr(object):
                 handler = custom_handler
 
         params_encoded = safe_urlencode(params, True)
-
-        if len(params_encoded) < 1024:
+        result_url = "%s/?%s" % (handler, params_encoded)
+        if http_method == 'get' or len(params_encoded) < 1024:
             # Typical case.
-            path = "%s/?%s" % (handler, params_encoded)
-            return self._send_request("get", path)
+            return self._send_request("get", result_url), result_url
         else:
             # Handles very long queries by submitting as a POST.
             path = "%s/" % handler
@@ -500,7 +501,7 @@ class Solr(object):
             }
             return self._send_request(
                 "post", path, body=params_encoded, headers=headers
-            )
+            ), result_url
 
     def _mlt(self, params, handler="mlt"):
         return self._select(params, handler)
@@ -831,9 +832,13 @@ class Solr(object):
             })
 
         """
+        http_method = None
+        if 'http_method' in kwargs:
+            http_method = kwargs.pop('http_method')
         params = {"q": q}
         params.update(kwargs)
-        response = self._select(params, handler=search_handler)
+        response, url = self._select(params, handler=search_handler, http_method=http_method)
+        url = self._create_full_url(url)
         decoded = self.decoder.decode(response)
 
         self.log.debug(
@@ -848,9 +853,9 @@ class Solr(object):
                 nextParams = params.copy()
                 nextParams["cursorMark"] = decoded["nextCursorMark"]
                 return self.search(search_handler=search_handler, **nextParams)
-            return self.results_cls(decoded, next_page_query)
+            return self.results_cls(decoded, next_page_query, url = url)
         else:
-            return self.results_cls(decoded)
+            return self.results_cls(decoded, url = url)
 
     def more_like_this(self, q, mltfl, handler="mlt", **kwargs):
         """
